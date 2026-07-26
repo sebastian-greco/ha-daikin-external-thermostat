@@ -1,0 +1,11 @@
+{
+  "codeowners": ["@sebastian-greco"],
+  "config_flow": true,
+  "documentation": "https://github.com/sebastian-greco/ha-daikin-external-thermostat",
+  "domain": "daikin_external_thermostat",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/sebastian-greco/ha-daikin-external-thermostat/issues",
+  "name": "Daikin External Thermostat",
+  "version": "1.0.0"
+}

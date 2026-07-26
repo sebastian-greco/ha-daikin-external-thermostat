@@ -1,0 +1,119 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This sensor and climate pair is already configured."
+    },
+    "error": {
+      "climate_no_cool": "The selected climate entity does not support cooling.",
+      "climate_no_target_temperature": "The selected climate entity does not support a target temperature.",
+      "climate_not_found": "The selected climate entity cannot be found in the state or entity registry.",
+      "sensor_not_temperature": "Select a sensor whose device class is temperature.",
+      "underlying_already_managed": "The selected climate entity is already managed by another Daikin External Thermostat entry."
+    },
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "data": {
+          "climate_entity_id": "Underlying air conditioner",
+          "entry_name": "Name",
+          "sensor_entity_id": "External room temperature sensor"
+        },
+        "data_description": {
+          "climate_entity_id": "Existing Home Assistant climate entity that supports cooling and target temperature.",
+          "entry_name": "Used for the virtual climate entity and its dedicated controller device.",
+          "sensor_entity_id": "This sensor becomes the virtual climate entity's current temperature."
+        },
+        "description": "Choose one external room sensor and one climate entity. Only this controller should write to the underlying climate.\n\n{warning}",
+        "title": "Choose entities"
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "boost_offset": "Boost offset must be greater than cooling offset.",
+      "command_budget": "The 24-hour automatic-command budget must be greater than zero.",
+      "fallback_boost_offset": "Fallback boost offset must be greater than fallback cooling offset.",
+      "non_negative": "Thresholds, offsets, and debounce values must be non-negative finite numbers.",
+      "positive_timing": "Minimum command interval, watchdog interval, and stale timeout must be positive; startup delay cannot be negative.",
+      "safety_resume": "Safety resume delta must be greater than or equal to cooling entry delta.",
+      "stale_timeout": "Sensor stale timeout must be longer than temperature debounce.",
+      "target_range": "Minimum target temperature must be lower than maximum target temperature.",
+      "target_step": "Target temperature step must be greater than zero.",
+      "threshold_order": "Required order: coast entry < cool entry <= boost exit < boost entry."
+    },
+    "step": {
+      "init": {
+        "description": "Values are expressed in Home Assistant's configured temperature unit. Timing values are seconds. Defaults prioritize sparse commands and safe recovery.",
+        "sections": {
+          "command_budget": {
+            "data": {
+              "max_automatic_commands_24h": "Maximum automatic commands per rolling 24 hours"
+            },
+            "data_description": {
+              "max_automatic_commands_24h": "Controller-side cap only; it does not count Daikin polling, app use, or other integrations."
+            },
+            "name": "Command budget"
+          },
+          "displayed_target": {
+            "data": {
+              "target_temperature_max": "Maximum room target",
+              "target_temperature_min": "Minimum room target",
+              "target_temperature_step": "Room target step"
+            },
+            "name": "Displayed target range"
+          },
+          "room_thresholds": {
+            "data": {
+              "boost_enabled": "Enable automatic boost",
+              "boost_enter_delta": "Boost entry delta",
+              "boost_exit_delta": "Boost exit delta",
+              "coast_enter_delta": "Coasting entry delta",
+              "cool_enter_delta": "Cooling entry delta",
+              "safety_off_delta": "Safety-off delta",
+              "safety_resume_delta": "Safety resume delta"
+            },
+            "data_description": {
+              "boost_enabled": "Boost is an internal high-demand stage, not a user-facing HVAC mode."
+            },
+            "name": "Room thresholds"
+          },
+          "safety_recovery": {
+            "data": {
+              "resume_after_sensor_recovery": "Resume after sensor recovery",
+              "sensor_stale_timeout": "Sensor stale timeout"
+            },
+            "data_description": {
+              "resume_after_sensor_recovery": "When disabled, recovery changes the virtual climate to off and requires manual re-enabling."
+            },
+            "name": "Safety and recovery"
+          },
+          "setpoint_offsets": {
+            "data": {
+              "boost_offset": "Boost offset from underlying temperature",
+              "coasting_offset": "Coasting offset above underlying temperature",
+              "cooling_offset": "Cooling offset from underlying temperature",
+              "fallback_boost_offset": "Fallback boost offset from room target",
+              "fallback_coasting_offset": "Fallback coasting offset above room target",
+              "fallback_cooling_offset": "Fallback cooling offset from room target"
+            },
+            "name": "Underlying setpoint offsets"
+          },
+          "timing": {
+            "data": {
+              "minimum_automatic_command_interval": "Minimum automatic command interval",
+              "startup_settle_delay": "Startup and recovery settle delay",
+              "target_change_debounce": "Target change debounce",
+              "temperature_debounce": "Temperature threshold debounce",
+              "watchdog_interval": "Recovery watchdog interval"
+            },
+            "data_description": {
+              "watchdog_interval": "The watchdog reads only in-memory states and writes only for a material mismatch."
+            },
+            "name": "Timing and debounce"
+          }
+        },
+        "title": "Tune controller"
+      }
+    }
+  }
+}

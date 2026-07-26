@@ -1,0 +1,119 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "Questa coppia sensore e climatizzatore è già configurata."
+    },
+    "error": {
+      "climate_no_cool": "L'entità climate selezionata non supporta il raffreddamento.",
+      "climate_no_target_temperature": "L'entità climate selezionata non supporta una temperatura obiettivo.",
+      "climate_not_found": "L'entità climate selezionata non è presente nello stato o nel registro entità.",
+      "sensor_not_temperature": "Seleziona un sensore con classe dispositivo temperatura.",
+      "underlying_already_managed": "L'entità climate selezionata è già gestita da un'altra configurazione Daikin External Thermostat."
+    },
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "data": {
+          "climate_entity_id": "Climatizzatore sottostante",
+          "entry_name": "Nome",
+          "sensor_entity_id": "Sensore esterno della temperatura ambiente"
+        },
+        "data_description": {
+          "climate_entity_id": "Entità climate esistente che supporta raffreddamento e temperatura obiettivo.",
+          "entry_name": "Usato per l'entità climate virtuale e il relativo dispositivo controller.",
+          "sensor_entity_id": "Questo sensore diventa la temperatura corrente del climate virtuale."
+        },
+        "description": "Scegli un sensore ambiente esterno e un'entità climate. Solo questo controller dovrebbe inviare comandi al climate sottostante.\n\n{warning}",
+        "title": "Scegli le entità"
+      }
+    }
+  },
+  "options": {
+    "error": {
+      "boost_offset": "L'offset boost deve essere maggiore dell'offset di raffreddamento.",
+      "command_budget": "Il limite di comandi automatici nelle 24 ore deve essere maggiore di zero.",
+      "fallback_boost_offset": "L'offset boost di riserva deve essere maggiore dell'offset raffreddamento di riserva.",
+      "non_negative": "Soglie, offset e debounce devono essere numeri finiti non negativi.",
+      "positive_timing": "Intervallo minimo, watchdog e timeout sensore devono essere positivi; il ritardo di avvio non può essere negativo.",
+      "safety_resume": "Il delta di ripresa sicurezza deve essere maggiore o uguale al delta di avvio raffreddamento.",
+      "stale_timeout": "Il timeout del sensore deve superare il debounce della temperatura.",
+      "target_range": "La temperatura obiettivo minima deve essere inferiore alla massima.",
+      "target_step": "Il passo della temperatura obiettivo deve essere maggiore di zero.",
+      "threshold_order": "Ordine richiesto: ingresso coast < ingresso cool <= uscita boost < ingresso boost."
+    },
+    "step": {
+      "init": {
+        "description": "I valori usano l'unità di temperatura configurata in Home Assistant. I tempi sono in secondi. Le impostazioni predefinite privilegiano pochi comandi e un recupero sicuro.",
+        "sections": {
+          "command_budget": {
+            "data": {
+              "max_automatic_commands_24h": "Comandi automatici massimi nelle 24 ore mobili"
+            },
+            "data_description": {
+              "max_automatic_commands_24h": "È solo il limite del controller; non include polling Daikin, app o altre integrazioni."
+            },
+            "name": "Limite comandi"
+          },
+          "displayed_target": {
+            "data": {
+              "target_temperature_max": "Obiettivo ambiente massimo",
+              "target_temperature_min": "Obiettivo ambiente minimo",
+              "target_temperature_step": "Passo obiettivo ambiente"
+            },
+            "name": "Intervallo obiettivo visualizzato"
+          },
+          "room_thresholds": {
+            "data": {
+              "boost_enabled": "Abilita boost automatico",
+              "boost_enter_delta": "Delta ingresso boost",
+              "boost_exit_delta": "Delta uscita boost",
+              "coast_enter_delta": "Delta ingresso coast",
+              "cool_enter_delta": "Delta ingresso raffreddamento",
+              "safety_off_delta": "Delta spegnimento di sicurezza",
+              "safety_resume_delta": "Delta ripresa dopo sicurezza"
+            },
+            "data_description": {
+              "boost_enabled": "Il boost è una fase interna ad alta richiesta, non una modalità HVAC visibile."
+            },
+            "name": "Soglie ambiente"
+          },
+          "safety_recovery": {
+            "data": {
+              "resume_after_sensor_recovery": "Riprendi dopo il recupero del sensore",
+              "sensor_stale_timeout": "Timeout sensore non aggiornato"
+            },
+            "data_description": {
+              "resume_after_sensor_recovery": "Se disabilitato, il recupero imposta il climate virtuale su off e richiede la riattivazione manuale."
+            },
+            "name": "Sicurezza e recupero"
+          },
+          "setpoint_offsets": {
+            "data": {
+              "boost_offset": "Offset boost dalla temperatura sottostante",
+              "coasting_offset": "Offset coast sopra la temperatura sottostante",
+              "cooling_offset": "Offset raffreddamento dalla temperatura sottostante",
+              "fallback_boost_offset": "Offset boost di riserva dall'obiettivo ambiente",
+              "fallback_coasting_offset": "Offset coast di riserva sopra l'obiettivo ambiente",
+              "fallback_cooling_offset": "Offset raffreddamento di riserva dall'obiettivo ambiente"
+            },
+            "name": "Offset setpoint sottostante"
+          },
+          "timing": {
+            "data": {
+              "minimum_automatic_command_interval": "Intervallo minimo comandi automatici",
+              "startup_settle_delay": "Ritardo stabilizzazione avvio e recupero",
+              "target_change_debounce": "Debounce cambio obiettivo",
+              "temperature_debounce": "Debounce soglia temperatura",
+              "watchdog_interval": "Intervallo watchdog di recupero"
+            },
+            "data_description": {
+              "watchdog_interval": "Il watchdog legge solo stati in memoria e invia comandi solo per differenze rilevanti."
+            },
+            "name": "Tempi e debounce"
+          }
+        },
+        "title": "Regola il controller"
+      }
+    }
+  }
+}
