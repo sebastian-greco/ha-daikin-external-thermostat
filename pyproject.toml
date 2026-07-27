@@ -1,6 +1,6 @@
 [project]
 name = "ha-daikin-external-thermostat"
-version = "1.1.0"
+version = "1.1.1"
 description = "Event-driven Home Assistant climate controller using an external temperature sensor"
 readme = "README.md"
 requires-python = ">=3.14.2"

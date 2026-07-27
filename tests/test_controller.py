@@ -49,6 +49,7 @@ from custom_components.daikin_external_thermostat.controller import (
 from custom_components.daikin_external_thermostat.models import (
     ControllerOptions,
     ControllerState,
+    DesiredCommand,
 )
 
 
@@ -332,6 +333,56 @@ async def test_external_manual_off_is_adopted(hass: HomeAssistant) -> None:
     await controller._async_underlying_changed(event)
     assert controller.requested_hvac_mode is HVACMode.OFF
     assert controller.controller_state is ControllerState.MANUAL_OFF
+
+
+async def test_delayed_self_generated_off_refresh_is_not_adopted(
+    hass: HomeAssistant,
+) -> None:
+    controller = make_controller(hass)
+    controller.requested_hvac_mode = HVACMode.COOL
+    controller.controller_state = ControllerState.SAFETY_OFF
+    controller._expected_command = DesiredCommand(HVACMode.OFF)
+    suppression_until = dt_util.utcnow() + timedelta(minutes=2)
+    controller._suppression_until = suppression_until
+
+    old_state = hass.states.get(controller.climate_entity_id)
+    assert old_state is not None
+    off_state = State(
+        controller.climate_entity_id,
+        HVACMode.OFF,
+        old_state.attributes,
+    )
+    event = type(
+        "Event",
+        (),
+        {"data": {"old_state": old_state, "new_state": off_state}},
+    )()
+
+    await controller._async_underlying_changed(event)
+
+    assert controller.requested_hvac_mode is HVACMode.COOL
+    assert controller.controller_state is ControllerState.SAFETY_OFF
+    assert controller._expected_command == DesiredCommand(HVACMode.OFF)
+    assert controller._suppression_until == suppression_until
+
+    controller._suppression_until = dt_util.utcnow() - timedelta(seconds=1)
+    refreshed_attributes = dict(off_state.attributes)
+    refreshed_attributes[ATTR_CURRENT_TEMPERATURE] = 24
+    refreshed_state = State(
+        controller.climate_entity_id,
+        HVACMode.OFF,
+        refreshed_attributes,
+    )
+    refresh_event = type(
+        "Event",
+        (),
+        {"data": {"old_state": off_state, "new_state": refreshed_state}},
+    )()
+
+    await controller._async_underlying_changed(refresh_event)
+
+    assert controller.requested_hvac_mode is HVACMode.COOL
+    assert controller.controller_state is ControllerState.SAFETY_OFF
 
 
 async def test_external_target_drift_is_recorded_but_not_fought(

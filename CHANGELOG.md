@@ -2,6 +2,13 @@
 
 All notable changes follow semantic versioning.
 
+## 1.1.1 - 2026-07-27
+
+- Prevent delayed attribute-only refreshes of an already-off underlying climate
+  from being mistaken for a new external manual-off command.
+- Keep expected self-generated commands active for the complete suppression
+  window so multiple cloud state updates remain correctly classified.
+
 ## 1.1.0 - 2026-07-27
 
 - Mirror every standard HVAC mode advertised by the underlying climate while

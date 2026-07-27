@@ -792,6 +792,9 @@ class DaikinExternalThermostatController:
             if old_state is not None
             else None
         )
+        old_observed_mode = (
+            self._as_hvac_mode(old_state.state) if old_state is not None else None
+        )
         self._read_underlying_state(new_state)
 
         if not self.underlying_available:
@@ -812,14 +815,12 @@ class DaikinExternalThermostatController:
             return
 
         self_generated = self._matches_expected_command()
-        if self_generated:
-            self._expected_command = None
-            self._suppression_until = None
         observed_mode = self._as_hvac_mode(self.underlying_mode)
         if (
             not self_generated
             and self.requested_hvac_mode is not HVACMode.OFF
             and observed_mode is not None
+            and observed_mode is not old_observed_mode
             and observed_mode in self.underlying_hvac_modes
             and observed_mode is not self.requested_hvac_mode
         ):
