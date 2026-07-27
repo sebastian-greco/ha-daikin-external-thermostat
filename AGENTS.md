@@ -8,9 +8,10 @@
 - Canonical behavior: `docs/functional-description.md`
 
 The integration is event-driven. Do not add polling, a `DataUpdateCoordinator`,
-periodic setpoint rewrites, direct Daikin API access, or extra user-facing HVAC
-modes. The controller is the only code allowed to call the underlying climate.
-Entity properties must remain I/O-free.
+periodic setpoint rewrites, or direct Daikin API access. Mirror the standard HVAC
+modes, fan modes, swing modes, presets, temperature ranges, and humidity controls
+advertised by the selected underlying climate. The controller is the only code
+allowed to call the underlying climate. Entity properties must remain I/O-free.
 
 ## Architecture
 
@@ -19,6 +20,12 @@ Entity properties must remain I/O-free.
   service calls.
 - `models.py` contains pure transition and setpoint calculations.
 - Each config entry owns exactly one external sensor and one underlying climate.
+- `cool` uses external-sensor regulation; every other supported active HVAC mode
+  is direct, event-driven passthrough.
+- Native presets such as Powerful/Boost are distinct from the controller's
+  automatic internal `boosting` stage.
+- Immediate user passthrough writes are logged and serialized but do not consume
+  the automatic cooling command budget.
 - Manual off, safety off, and stale-sensor off must bypass automatic throttles.
 
 ## Development

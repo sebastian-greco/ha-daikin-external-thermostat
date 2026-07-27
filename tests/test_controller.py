@@ -1,12 +1,30 @@
 from dataclasses import replace
 from datetime import timedelta
 
+import pytest
 from homeassistant.components.climate.const import (
+    ATTR_CURRENT_HUMIDITY,
     ATTR_CURRENT_TEMPERATURE,
+    ATTR_FAN_MODE,
+    ATTR_FAN_MODES,
+    ATTR_HUMIDITY,
     ATTR_HVAC_ACTION,
+    ATTR_HVAC_MODES,
+    ATTR_MAX_HUMIDITY,
     ATTR_MAX_TEMP,
+    ATTR_MIN_HUMIDITY,
     ATTR_MIN_TEMP,
+    ATTR_PRESET_MODE,
+    ATTR_PRESET_MODES,
+    ATTR_SWING_HORIZONTAL_MODE,
+    ATTR_SWING_HORIZONTAL_MODES,
+    ATTR_SWING_MODE,
+    ATTR_SWING_MODES,
+    ATTR_TARGET_HUMIDITY_STEP,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
     ATTR_TARGET_TEMP_STEP,
+    ClimateEntityFeature,
     HVACAction,
     HVACMode,
 )
@@ -345,3 +363,235 @@ def test_restart_restores_intent_target_and_rolling_budget(
     assert controller.requested_hvac_mode is HVACMode.COOL
     assert controller.target_temperature == 25.5
     assert controller.automatic_command_count_24h == 1
+
+
+def _enable_passthrough_capabilities(
+    controller: DaikinExternalThermostatController,
+) -> None:
+    """Populate the controller from a fully featured underlying climate state."""
+    controller._read_underlying_state(
+        State(
+            controller.climate_entity_id,
+            HVACMode.COOL,
+            {
+                ATTR_HVAC_MODES: [
+                    HVACMode.OFF,
+                    HVACMode.COOL,
+                    HVACMode.HEAT,
+                    HVACMode.HEAT_COOL,
+                    HVACMode.DRY,
+                    HVACMode.FAN_ONLY,
+                ],
+                "supported_features": (
+                    ClimateEntityFeature.TARGET_TEMPERATURE
+                    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                    | ClimateEntityFeature.TARGET_HUMIDITY
+                    | ClimateEntityFeature.FAN_MODE
+                    | ClimateEntityFeature.PRESET_MODE
+                    | ClimateEntityFeature.SWING_MODE
+                    | ClimateEntityFeature.SWING_HORIZONTAL_MODE
+                ),
+                ATTR_CURRENT_TEMPERATURE: 25,
+                ATTR_TEMPERATURE: 23.5,
+                ATTR_MIN_TEMP: 16,
+                ATTR_MAX_TEMP: 32,
+                ATTR_TARGET_TEMP_STEP: 0.5,
+                ATTR_HVAC_ACTION: HVACAction.COOLING,
+                ATTR_CURRENT_HUMIDITY: 48,
+                ATTR_HUMIDITY: 50,
+                ATTR_MIN_HUMIDITY: 30,
+                ATTR_MAX_HUMIDITY: 70,
+                ATTR_TARGET_HUMIDITY_STEP: 5,
+                ATTR_TARGET_TEMP_LOW: 19,
+                ATTR_TARGET_TEMP_HIGH: 25,
+                ATTR_FAN_MODE: "auto",
+                ATTR_FAN_MODES: ["auto", "low", "high"],
+                ATTR_SWING_MODE: "off",
+                ATTR_SWING_MODES: ["off", "vertical", "both"],
+                ATTR_SWING_HORIZONTAL_MODE: "off",
+                ATTR_SWING_HORIZONTAL_MODES: ["off", "on"],
+                ATTR_PRESET_MODE: "none",
+                ATTR_PRESET_MODES: ["none", "powerful", "econo"],
+            },
+        )
+    )
+
+
+def test_reads_all_underlying_passthrough_capabilities(hass: HomeAssistant) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+
+    assert HVACMode.HEAT in controller.underlying_hvac_modes
+    assert controller.underlying_fan_modes == ["auto", "low", "high"]
+    assert controller.underlying_target_low == 19
+    assert controller.underlying_target_high == 25
+    assert controller.underlying_target_humidity == 50
+    assert controller.underlying_swing_modes == ["off", "vertical", "both"]
+    assert controller.underlying_swing_horizontal_modes == ["off", "on"]
+    assert controller.underlying_preset_modes == ["none", "powerful", "econo"]
+
+
+async def test_forwards_native_climate_controls(hass: HomeAssistant) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    calls: list[tuple[str, ServiceCall]] = []
+
+    def capture(service: str):
+        async def capture_call(call: ServiceCall) -> None:
+            calls.append((service, call))
+
+        return capture_call
+
+    for service in (
+        "set_fan_mode",
+        "set_swing_mode",
+        "set_swing_horizontal_mode",
+        "set_preset_mode",
+    ):
+        hass.services.async_register("climate", service, capture(service))
+
+    await controller.async_set_fan_mode("high")
+    await controller.async_set_swing_mode("both")
+    await controller.async_set_swing_horizontal_mode("on")
+    await controller.async_set_preset_mode("powerful")
+
+    assert [service for service, _call in calls] == [
+        "set_fan_mode",
+        "set_swing_mode",
+        "set_swing_horizontal_mode",
+        "set_preset_mode",
+    ]
+    assert calls[0][1].data[ATTR_FAN_MODE] == "high"
+    assert calls[1][1].data[ATTR_SWING_MODE] == "both"
+    assert calls[2][1].data[ATTR_SWING_HORIZONTAL_MODE] == "on"
+    assert calls[3][1].data[ATTR_PRESET_MODE] == "powerful"
+    assert controller.automatic_command_count_24h == 0
+
+
+async def test_rejects_unadvertised_passthrough_value(hass: HomeAssistant) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+
+    with pytest.raises(ValueError, match="Unsupported fan mode"):
+        await controller.async_set_fan_mode("turbo-ultra")
+
+
+async def test_non_cooling_hvac_and_temperature_are_passthrough(
+    hass: HomeAssistant,
+) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    calls: list[tuple[str, ServiceCall]] = []
+
+    def capture(service: str):
+        async def capture_call(call: ServiceCall) -> None:
+            calls.append((service, call))
+
+        return capture_call
+
+    hass.services.async_register("climate", "set_hvac_mode", capture("set_hvac_mode"))
+    hass.services.async_register(
+        "climate", "set_temperature", capture("set_temperature")
+    )
+
+    await controller.async_set_hvac_mode(HVACMode.HEAT)
+    await controller.async_set_passthrough_temperature(21.2)
+
+    assert controller.requested_hvac_mode is HVACMode.HEAT
+    assert controller.controller_state is ControllerState.PASSTHROUGH
+    assert calls[0][1].data["hvac_mode"] == HVACMode.HEAT
+    assert calls[1][1].data[ATTR_TEMPERATURE] == 21.0
+    assert controller.target_temperature == 24
+    assert controller.automatic_command_count_24h == 0
+
+
+async def test_temperature_range_and_humidity_are_passthrough(
+    hass: HomeAssistant,
+) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    calls: list[tuple[str, ServiceCall]] = []
+
+    def capture(service: str):
+        async def capture_call(call: ServiceCall) -> None:
+            calls.append((service, call))
+
+        return capture_call
+
+    hass.services.async_register(
+        "climate", "set_temperature", capture("set_temperature")
+    )
+    hass.services.async_register("climate", "set_humidity", capture("set_humidity"))
+
+    await controller.async_set_passthrough_temperature(
+        mode=HVACMode.HEAT_COOL, target_low=18.9, target_high=24.2
+    )
+    await controller.async_set_humidity(53)
+
+    assert calls[0][1].data["hvac_mode"] == HVACMode.HEAT_COOL
+    assert calls[0][1].data[ATTR_TARGET_TEMP_LOW] == 19
+    assert calls[0][1].data[ATTR_TARGET_TEMP_HIGH] == 24
+    assert calls[1][1].data[ATTR_HUMIDITY] == 55
+
+
+async def test_passthrough_mode_ignores_external_sensor_fault(
+    hass: HomeAssistant,
+) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    controller.requested_hvac_mode = HVACMode.DRY
+    controller.controller_state = ControllerState.PASSTHROUGH
+    controller._read_sensor_state(State(controller.sensor_entity_id, "unavailable"))
+
+    controller._start_stale_timer()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(hours=2))
+    await hass.async_block_till_done()
+
+    assert controller.requested_hvac_mode is HVACMode.DRY
+    assert controller.controller_state is ControllerState.PASSTHROUGH
+    assert not controller._sensor_fault_active
+
+
+async def test_external_active_mode_change_is_adopted(hass: HomeAssistant) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    controller.requested_hvac_mode = HVACMode.COOL
+    controller.controller_state = ControllerState.COOLING
+    old_state = hass.states.get(controller.climate_entity_id)
+    attributes = dict(old_state.attributes if old_state is not None else {})
+    attributes[ATTR_HVAC_MODES] = controller.underlying_hvac_modes
+    new_state = State(controller.climate_entity_id, HVACMode.HEAT, attributes)
+    event = type(
+        "Event",
+        (),
+        {"data": {"old_state": old_state, "new_state": new_state}},
+    )()
+
+    await controller._async_underlying_changed(event)
+
+    assert controller.requested_hvac_mode is HVACMode.HEAT
+    assert controller.controller_state is ControllerState.PASSTHROUGH
+
+
+async def test_external_active_mode_remains_unmanaged_while_virtual_off(
+    hass: HomeAssistant,
+) -> None:
+    controller = make_controller(hass)
+    _enable_passthrough_capabilities(controller)
+    controller.requested_hvac_mode = HVACMode.OFF
+    controller.controller_state = ControllerState.MANUAL_OFF
+    old_state = hass.states.get(controller.climate_entity_id)
+    attributes = dict(old_state.attributes if old_state is not None else {})
+    attributes[ATTR_HVAC_MODES] = controller.underlying_hvac_modes
+    new_state = State(controller.climate_entity_id, HVACMode.HEAT, attributes)
+    event = type(
+        "Event",
+        (),
+        {"data": {"old_state": old_state, "new_state": new_state}},
+    )()
+
+    await controller._async_underlying_changed(event)
+
+    assert controller.requested_hvac_mode is HVACMode.OFF
+    assert controller.controller_state is ControllerState.MANUAL_OFF
+    assert controller.external_control

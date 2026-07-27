@@ -41,6 +41,7 @@ class ControllerState(StrEnum):
     """Internal state of the controller."""
 
     MANUAL_OFF = "manual_off"
+    PASSTHROUGH = "passthrough"
     BOOSTING = "boosting"
     COOLING = "cooling"
     COASTING = "coasting"

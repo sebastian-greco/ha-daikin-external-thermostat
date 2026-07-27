@@ -12,7 +12,10 @@ so it does not connect directly to Daikin or store Daikin credentials.
 
 ## Highlights
 
-- Standard `off` / `cool` climate entity for Thermostat and Tile cards
+- All standard HVAC modes advertised by the selected underlying climate
+- Capability-based forwarding for fan speed, native presets (including
+  Powerful/Boost when available), vertical and horizontal swing, target ranges,
+  and humidity controls
 - External sensor shown as current temperature
 - Retained target temperature and requested mode across restarts
 - Cooling, coasting, optional automatic boost, and latched cold-safety stages
@@ -86,6 +89,17 @@ underlying AC thermometer (`U`):
 Boost is optional and internal; it is never exposed as an HVAC mode. Threshold
 crossings must remain stable for 30 seconds by default. The resulting setpoint
 is clamped and quantized to the underlying entity's supported range and step.
+
+`cool` is the externally regulated mode described above. Every other HVAC mode
+advertised by the underlying entity—such as heat, dry, auto, heat/cool, or
+fan-only—is exposed as direct passthrough. In passthrough modes, temperature,
+temperature range, humidity, fan, swing, and preset requests are sent unchanged
+through Home Assistant after validation and normalization. These manual controls
+are immediate and do not consume the automatic cooling command budget.
+
+Native Daikin Powerful/Boost is exposed only when the underlying climate lists it
+as a preset. It remains separate from the controller's automatic `boosting`
+stage, which changes only the calculated cooling setpoint.
 
 ## Diagnostics
 

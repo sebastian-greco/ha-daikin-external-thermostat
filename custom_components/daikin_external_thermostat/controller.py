@@ -11,12 +11,36 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.climate.const import (
+    ATTR_CURRENT_HUMIDITY,
     ATTR_CURRENT_TEMPERATURE,
+    ATTR_FAN_MODE,
+    ATTR_FAN_MODES,
+    ATTR_HUMIDITY,
     ATTR_HVAC_ACTION,
+    ATTR_HVAC_MODE,
+    ATTR_HVAC_MODES,
+    ATTR_MAX_HUMIDITY,
     ATTR_MAX_TEMP,
+    ATTR_MIN_HUMIDITY,
     ATTR_MIN_TEMP,
+    ATTR_PRESET_MODE,
+    ATTR_PRESET_MODES,
+    ATTR_SWING_HORIZONTAL_MODE,
+    ATTR_SWING_HORIZONTAL_MODES,
+    ATTR_SWING_MODE,
+    ATTR_SWING_MODES,
+    ATTR_TARGET_HUMIDITY_STEP,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
     ATTR_TARGET_TEMP_STEP,
+    SERVICE_SET_FAN_MODE,
+    SERVICE_SET_HUMIDITY,
+    SERVICE_SET_HVAC_MODE,
+    SERVICE_SET_PRESET_MODE,
+    SERVICE_SET_SWING_HORIZONTAL_MODE,
+    SERVICE_SET_SWING_MODE,
     SERVICE_SET_TEMPERATURE,
+    ClimateEntityFeature,
     HVACAction,
     HVACMode,
 )
@@ -25,6 +49,7 @@ from homeassistant.components.climate.const import (
 )
 from homeassistant.const import (
     ATTR_ENTITY_ID,
+    ATTR_SUPPORTED_FEATURES,
     ATTR_TEMPERATURE,
     ATTR_UNIT_OF_MEASUREMENT,
     SERVICE_TURN_OFF,
@@ -93,11 +118,28 @@ class DaikinExternalThermostatController:
         self.current_temperature: float | None = None
         self.underlying_temperature: float | None = None
         self.underlying_target: float | None = None
+        self.underlying_target_low: float | None = None
+        self.underlying_target_high: float | None = None
         self.underlying_mode: str | None = None
         self.underlying_action: str | None = None
         self.underlying_minimum: float | None = None
         self.underlying_maximum: float | None = None
         self.underlying_step: float | None = None
+        self.underlying_current_humidity: int | None = None
+        self.underlying_target_humidity: int | None = None
+        self.underlying_minimum_humidity: int | None = None
+        self.underlying_maximum_humidity: int | None = None
+        self.underlying_humidity_step: int | None = None
+        self.underlying_hvac_modes: list[HVACMode] = [HVACMode.OFF, HVACMode.COOL]
+        self.underlying_supported_features = ClimateEntityFeature(0)
+        self.underlying_fan_mode: str | None = None
+        self.underlying_fan_modes: list[str] | None = None
+        self.underlying_swing_mode: str | None = None
+        self.underlying_swing_modes: list[str] | None = None
+        self.underlying_swing_horizontal_mode: str | None = None
+        self.underlying_swing_horizontal_modes: list[str] | None = None
+        self.underlying_preset_mode: str | None = None
+        self.underlying_preset_modes: list[str] | None = None
         self.underlying_available = False
 
         self.desired_command: DesiredCommand | None = None
@@ -158,12 +200,26 @@ class DaikinExternalThermostatController:
         """Map internal and underlying state to the standard climate action."""
         if self.requested_hvac_mode is HVACMode.OFF:
             return HVACAction.OFF
+        if self.requested_hvac_mode is not HVACMode.COOL:
+            if self.underlying_action is None:
+                return HVACAction.IDLE
+            try:
+                return HVACAction(self.underlying_action)
+            except ValueError:
+                return HVACAction.IDLE
         if (
             self.controller_state in (ControllerState.BOOSTING, ControllerState.COOLING)
             and self.underlying_action == HVACAction.COOLING
         ):
             return HVACAction.COOLING
         return HVACAction.IDLE
+
+    @property
+    def exposed_target_temperature(self) -> float | None:
+        """Return the room target in cool/off and the AC target in passthrough."""
+        if self.requested_hvac_mode in (HVACMode.OFF, HVACMode.COOL):
+            return self.target_temperature
+        return self.underlying_target
 
     @property
     def diagnostic_attributes(self) -> dict[str, Any]:
@@ -188,6 +244,7 @@ class DaikinExternalThermostatController:
             "last_valid_underlying_temperature": self.underlying_temperature,
             "external_control": self.external_control,
             "external_target_drift": self.external_target_drift,
+            "cooling_target_temperature": self.target_temperature,
         }
 
     def diagnostics(self) -> dict[str, Any]:
@@ -223,8 +280,9 @@ class DaikinExternalThermostatController:
         automatic_timestamps: Any,
     ) -> None:
         """Restore user intent and quota history before startup reconciliation."""
-        if mode in (HVACMode.OFF, HVACMode.COOL):
-            self.requested_hvac_mode = HVACMode(mode)
+        restored_mode = self._as_hvac_mode(mode)
+        if restored_mode is not None:
+            self.requested_hvac_mode = restored_mode
         restored_target = finite_float(target)
         if restored_target is not None:
             self.target_temperature = self._normalize_target(restored_target)
@@ -244,6 +302,8 @@ class DaikinExternalThermostatController:
         self._started = True
         self._read_sensor_state(self.hass.states.get(self.sensor_entity_id))
         self._read_underlying_state(self.hass.states.get(self.climate_entity_id))
+        if self.requested_hvac_mode not in self.underlying_hvac_modes:
+            self.requested_hvac_mode = HVACMode.OFF
         self._listeners.extend(
             (
                 async_track_state_change_event(
@@ -258,7 +318,7 @@ class DaikinExternalThermostatController:
             )
         )
         self._schedule_watchdog()
-        if not self._sensor_valid:
+        if not self._sensor_valid and self.requested_hvac_mode is HVACMode.COOL:
             self._start_stale_timer()
         self._notify_state()
 
@@ -292,18 +352,28 @@ class DaikinExternalThermostatController:
         self._cancel_threshold_timer()
         self._cancel_pending_timer()
         self._schedule_watchdog()
-        if not self._sensor_valid:
+        if not self._sensor_valid and self.requested_hvac_mode is HVACMode.COOL:
             self._start_stale_timer()
+        if self.requested_hvac_mode is not HVACMode.COOL:
+            self._notify_state()
+            return
         await self._consider_transition("options_update", debounce=False)
         await self.async_reconcile("options_update")
 
     async def async_set_hvac_mode(self, mode: HVACMode) -> None:
         """Apply user HVAC intent."""
-        if mode not in (HVACMode.OFF, HVACMode.COOL):
+        if mode not in self.underlying_hvac_modes:
             raise ValueError(f"Unsupported HVAC mode: {mode}")
+        previous_mode = self.requested_hvac_mode
+        previous_state = self.controller_state
         self.requested_hvac_mode = mode
         self._cancel_threshold_timer()
+        self._clear_pending()
+        if self._target_unsub is not None:
+            self._target_unsub()
+            self._target_unsub = None
         if mode is HVACMode.OFF:
+            self._cancel_stale_timer()
             self._set_controller_state(ControllerState.MANUAL_OFF, "manual_off")
             self._sensor_fault_active = False
             self.external_control = self.underlying_mode not in (
@@ -316,7 +386,31 @@ class DaikinExternalThermostatController:
             await self.async_reconcile("manual_off")
             return
 
+        if mode is not HVACMode.COOL:
+            self._sensor_fault_active = False
+            self._cancel_stale_timer()
+            self.external_control = False
+            self.desired_command = None
+            self._set_controller_state(ControllerState.PASSTHROUGH, "manual_mode")
+            self._notify_state()
+            try:
+                await self._async_forward_service(
+                    SERVICE_SET_HVAC_MODE,
+                    {ATTR_HVAC_MODE: mode},
+                    "manual_hvac_mode",
+                )
+            except Exception:
+                self.requested_hvac_mode = previous_mode
+                self._set_controller_state(previous_state, "manual_mode_failed")
+                self._notify_state()
+                raise
+            return
+
         self.external_control = False
+        if self._sensor_valid:
+            self._cancel_stale_timer()
+        else:
+            self._start_stale_timer()
         if self._sensor_valid and self.current_temperature is not None:
             self._set_controller_state(
                 initial_cooling_state(
@@ -336,7 +430,7 @@ class DaikinExternalThermostatController:
             raise ValueError("Target temperature must be a finite number")
         self.target_temperature = self._normalize_target(parsed)
         self._notify_state()
-        if self.requested_hvac_mode is HVACMode.OFF:
+        if self.requested_hvac_mode is not HVACMode.COOL:
             return
         if self._target_unsub is not None:
             self._target_unsub()
@@ -350,9 +444,123 @@ class DaikinExternalThermostatController:
             self.hass, self.options.target_change_debounce, target_ready
         )
 
+    async def async_set_passthrough_temperature(
+        self,
+        temperature: float | None = None,
+        mode: HVACMode | None = None,
+        *,
+        target_low: float | None = None,
+        target_high: float | None = None,
+    ) -> None:
+        """Forward a raw target temperature while outside regulated cooling."""
+        selected_mode = mode or self.requested_hvac_mode
+        if selected_mode in (HVACMode.OFF, HVACMode.COOL):
+            raise ValueError("Passthrough temperature requires a passthrough HVAC mode")
+        if selected_mode not in self.underlying_hvac_modes:
+            raise ValueError(f"Unsupported HVAC mode: {selected_mode}")
+        data: dict[str, Any] = {}
+        if temperature is not None:
+            parsed = finite_float(temperature)
+            if parsed is None:
+                raise ValueError("Target temperature must be a finite number")
+            data[ATTR_TEMPERATURE] = self._normalize_underlying_target(parsed)
+        if target_low is not None or target_high is not None:
+            parsed_low = finite_float(target_low)
+            parsed_high = finite_float(target_high)
+            if parsed_low is None or parsed_high is None:
+                raise ValueError("Both range temperatures must be finite numbers")
+            normalized_low = self._normalize_underlying_target(parsed_low)
+            normalized_high = self._normalize_underlying_target(parsed_high)
+            if normalized_low > normalized_high:
+                raise ValueError("Low target temperature cannot exceed high target")
+            data[ATTR_TARGET_TEMP_LOW] = normalized_low
+            data[ATTR_TARGET_TEMP_HIGH] = normalized_high
+        if not data:
+            raise ValueError("A target temperature or temperature range is required")
+        if selected_mode is not self.requested_hvac_mode:
+            data[ATTR_HVAC_MODE] = selected_mode
+        await self._async_forward_service(
+            SERVICE_SET_TEMPERATURE, data, "manual_passthrough_temperature"
+        )
+        self.requested_hvac_mode = selected_mode
+        self._set_controller_state(ControllerState.PASSTHROUGH, "manual_mode")
+        self._notify_state()
+
+    async def async_set_humidity(self, humidity: int) -> None:
+        """Forward a supported target humidity to the underlying climate."""
+        if (
+            not self.underlying_supported_features
+            & ClimateEntityFeature.TARGET_HUMIDITY
+        ):
+            raise ValueError("The underlying climate does not support target humidity")
+        minimum = (
+            self.underlying_minimum_humidity
+            if self.underlying_minimum_humidity is not None
+            else 30
+        )
+        maximum = (
+            self.underlying_maximum_humidity
+            if self.underlying_maximum_humidity is not None
+            else 99
+        )
+        step = (
+            self.underlying_humidity_step
+            if self.underlying_humidity_step is not None
+            else 1
+        )
+        bounded = min(max(int(humidity), minimum), maximum)
+        normalized = minimum + round((bounded - minimum) / step) * step
+        await self._async_forward_service(
+            SERVICE_SET_HUMIDITY,
+            {ATTR_HUMIDITY: min(maximum, max(minimum, normalized))},
+            "manual_humidity",
+        )
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Forward a supported fan mode to the underlying climate."""
+        self._validate_passthrough_value(fan_mode, self.underlying_fan_modes, "fan")
+        await self._async_forward_service(
+            SERVICE_SET_FAN_MODE, {ATTR_FAN_MODE: fan_mode}, "manual_fan_mode"
+        )
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        """Forward a supported vertical/combined swing mode."""
+        self._validate_passthrough_value(
+            swing_mode, self.underlying_swing_modes, "swing"
+        )
+        await self._async_forward_service(
+            SERVICE_SET_SWING_MODE,
+            {ATTR_SWING_MODE: swing_mode},
+            "manual_swing_mode",
+        )
+
+    async def async_set_swing_horizontal_mode(self, swing_mode: str) -> None:
+        """Forward a supported horizontal swing mode."""
+        self._validate_passthrough_value(
+            swing_mode, self.underlying_swing_horizontal_modes, "horizontal swing"
+        )
+        await self._async_forward_service(
+            SERVICE_SET_SWING_HORIZONTAL_MODE,
+            {ATTR_SWING_HORIZONTAL_MODE: swing_mode},
+            "manual_horizontal_swing_mode",
+        )
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Forward a supported native preset such as Powerful or Econo."""
+        self._validate_passthrough_value(
+            preset_mode, self.underlying_preset_modes, "preset"
+        )
+        await self._async_forward_service(
+            SERVICE_SET_PRESET_MODE,
+            {ATTR_PRESET_MODE: preset_mode},
+            "manual_preset_mode",
+        )
+
     async def async_reconcile(self, reason: str) -> None:
         """Serialize reconciliation and ensure a final pass after concurrent events."""
         if not self._started:
+            return
+        if self.requested_hvac_mode not in (HVACMode.OFF, HVACMode.COOL):
             return
         if not self._startup_settled and reason not in (
             "manual_off",
@@ -544,6 +752,10 @@ class DaikinExternalThermostatController:
         """Process external sensor events."""
         was_valid = self._sensor_valid
         self._read_sensor_state(event.data["new_state"])
+        if self.requested_hvac_mode is not HVACMode.COOL:
+            self._cancel_stale_timer()
+            self._notify_state()
+            return
         if not self._sensor_valid:
             self._cancel_threshold_timer()
             self._start_stale_timer()
@@ -603,17 +815,52 @@ class DaikinExternalThermostatController:
         if self_generated:
             self._expected_command = None
             self._suppression_until = None
+        observed_mode = self._as_hvac_mode(self.underlying_mode)
         if (
-            self.requested_hvac_mode is HVACMode.COOL
-            and self.underlying_mode == HVACMode.OFF
-            and not self_generated
+            not self_generated
+            and self.requested_hvac_mode is not HVACMode.OFF
+            and observed_mode is not None
+            and observed_mode in self.underlying_hvac_modes
+            and observed_mode is not self.requested_hvac_mode
         ):
-            self.requested_hvac_mode = HVACMode.OFF
-            self._set_controller_state(
-                ControllerState.MANUAL_OFF, "external_manual_off"
-            )
+            self.requested_hvac_mode = observed_mode
             self._cancel_threshold_timer()
-            _LOGGER.info("Adopted external underlying off as virtual manual off")
+            self._clear_pending()
+            if observed_mode is HVACMode.OFF:
+                self._cancel_stale_timer()
+                self._set_controller_state(
+                    ControllerState.MANUAL_OFF, "external_manual_off"
+                )
+                _LOGGER.info("Adopted external underlying off as virtual manual off")
+            elif observed_mode is HVACMode.COOL:
+                if self._sensor_valid:
+                    self._cancel_stale_timer()
+                else:
+                    self._start_stale_timer()
+                if self._sensor_valid and self.current_temperature is not None:
+                    self._set_controller_state(
+                        initial_cooling_state(
+                            self.current_temperature,
+                            self.target_temperature,
+                            self.options,
+                        ),
+                        "external_mode_change",
+                    )
+                else:
+                    self._set_controller_state(
+                        ControllerState.COOLING, "external_mode_change"
+                    )
+                _LOGGER.info("Adopted external underlying cooling mode")
+            else:
+                self._sensor_fault_active = False
+                self._cancel_stale_timer()
+                self.desired_command = None
+                self._set_controller_state(
+                    ControllerState.PASSTHROUGH, "external_mode_change"
+                )
+                _LOGGER.info(
+                    "Adopted external underlying passthrough mode %s", observed_mode
+                )
         elif self.requested_hvac_mode is HVACMode.OFF:
             self.external_control = self.underlying_mode not in (
                 HVACMode.OFF,
@@ -632,6 +879,9 @@ class DaikinExternalThermostatController:
 
     async def _consider_transition(self, reason: str, *, debounce: bool) -> None:
         """Apply or schedule a stable threshold transition."""
+        if self.requested_hvac_mode is not HVACMode.COOL:
+            self._cancel_threshold_timer()
+            return
         candidate = next_controller_state(
             self.controller_state,
             requested_cool=self.requested_hvac_mode is HVACMode.COOL,
@@ -709,6 +959,23 @@ class DaikinExternalThermostatController:
             self._read_sensor_state(self.hass.states.get(self.sensor_entity_id))
             self._read_underlying_state(self.hass.states.get(self.climate_entity_id))
             self._startup_settled = True
+            observed_mode = self._as_hvac_mode(self.underlying_mode)
+            if (
+                self.requested_hvac_mode not in (HVACMode.OFF, HVACMode.COOL)
+                and observed_mode in self.underlying_hvac_modes
+            ):
+                self.requested_hvac_mode = observed_mode
+            if self.requested_hvac_mode not in self.underlying_hvac_modes:
+                self.requested_hvac_mode = HVACMode.OFF
+            if self.requested_hvac_mode is not HVACMode.COOL:
+                self._set_controller_state(
+                    ControllerState.MANUAL_OFF
+                    if self.requested_hvac_mode is HVACMode.OFF
+                    else ControllerState.PASSTHROUGH,
+                    reason,
+                )
+                self._notify_state()
+                return
             await self._consider_transition(reason, debounce=False)
             await self.async_reconcile(reason)
             self._notify_state()
@@ -728,6 +995,8 @@ class DaikinExternalThermostatController:
         )
 
     async def _async_watchdog(self, _now: datetime) -> None:
+        if self.requested_hvac_mode is not HVACMode.COOL:
+            return
         await self._consider_transition("watchdog", debounce=True)
         await self.async_reconcile("watchdog")
 
@@ -741,7 +1010,7 @@ class DaikinExternalThermostatController:
 
         async def stale(_now: datetime) -> None:
             self._stale_unsub = None
-            if self._sensor_valid or self.requested_hvac_mode is HVACMode.OFF:
+            if self._sensor_valid or self.requested_hvac_mode is not HVACMode.COOL:
                 return
             self._sensor_fault_active = True
             self._set_controller_state(ControllerState.SENSOR_FAULT, "sensor_stale")
@@ -782,14 +1051,153 @@ class DaikinExternalThermostatController:
             self.underlying_mode = None
             return
         self.underlying_mode = state.state
-        self.underlying_action = state.attributes.get(ATTR_HVAC_ACTION)
+        if not self.underlying_available:
+            return
+        self.underlying_action = self._optional_string(
+            state.attributes.get(ATTR_HVAC_ACTION)
+        )
         current = finite_float(state.attributes.get(ATTR_CURRENT_TEMPERATURE))
         if current is not None:
             self.underlying_temperature = current
         self.underlying_target = finite_float(state.attributes.get(ATTR_TEMPERATURE))
+        self.underlying_target_low = finite_float(
+            state.attributes.get(ATTR_TARGET_TEMP_LOW)
+        )
+        self.underlying_target_high = finite_float(
+            state.attributes.get(ATTR_TARGET_TEMP_HIGH)
+        )
         self.underlying_minimum = finite_float(state.attributes.get(ATTR_MIN_TEMP))
         self.underlying_maximum = finite_float(state.attributes.get(ATTR_MAX_TEMP))
         self.underlying_step = finite_float(state.attributes.get(ATTR_TARGET_TEMP_STEP))
+        self.underlying_current_humidity = self._optional_int(
+            state.attributes.get(ATTR_CURRENT_HUMIDITY)
+        )
+        self.underlying_target_humidity = self._optional_int(
+            state.attributes.get(ATTR_HUMIDITY)
+        )
+        self.underlying_minimum_humidity = self._optional_int(
+            state.attributes.get(ATTR_MIN_HUMIDITY)
+        )
+        self.underlying_maximum_humidity = self._optional_int(
+            state.attributes.get(ATTR_MAX_HUMIDITY)
+        )
+        self.underlying_humidity_step = self._optional_int(
+            state.attributes.get(ATTR_TARGET_HUMIDITY_STEP)
+        )
+        modes = [
+            mode
+            for value in self._string_list(state.attributes.get(ATTR_HVAC_MODES)) or []
+            if (mode := self._as_hvac_mode(value)) is not None
+        ]
+        if modes:
+            self.underlying_hvac_modes = modes
+        try:
+            self.underlying_supported_features = ClimateEntityFeature(
+                int(state.attributes.get(ATTR_SUPPORTED_FEATURES, 0))
+            )
+        except TypeError, ValueError:
+            self.underlying_supported_features = ClimateEntityFeature(0)
+        self.underlying_fan_mode = self._optional_string(
+            state.attributes.get(ATTR_FAN_MODE)
+        )
+        self.underlying_fan_modes = self._string_list(
+            state.attributes.get(ATTR_FAN_MODES)
+        )
+        self.underlying_swing_mode = self._optional_string(
+            state.attributes.get(ATTR_SWING_MODE)
+        )
+        self.underlying_swing_modes = self._string_list(
+            state.attributes.get(ATTR_SWING_MODES)
+        )
+        self.underlying_swing_horizontal_mode = self._optional_string(
+            state.attributes.get(ATTR_SWING_HORIZONTAL_MODE)
+        )
+        self.underlying_swing_horizontal_modes = self._string_list(
+            state.attributes.get(ATTR_SWING_HORIZONTAL_MODES)
+        )
+        self.underlying_preset_mode = self._optional_string(
+            state.attributes.get(ATTR_PRESET_MODE)
+        )
+        self.underlying_preset_modes = self._string_list(
+            state.attributes.get(ATTR_PRESET_MODES)
+        )
+
+    async def _async_forward_service(
+        self, service: str, data: dict[str, Any], reason: str
+    ) -> None:
+        """Serialize and record one immediate user-requested passthrough call."""
+        async with self._lock:
+            now = dt_util.utcnow()
+            service_data = {ATTR_ENTITY_ID: self.climate_entity_id, **data}
+            try:
+                await self.hass.services.async_call(
+                    CLIMATE_DOMAIN,
+                    service,
+                    service_data,
+                    blocking=True,
+                )
+            except Exception as err:
+                self.last_error_at = now
+                self.fault_reason = type(err).__name__
+                self._command_history.append(
+                    {
+                        "at": self._iso(now),
+                        "reason": reason,
+                        "service": service,
+                        "data": data,
+                        "result": "error",
+                        "error_category": type(err).__name__,
+                    }
+                )
+                self._notify_state()
+                raise
+
+            self._error_count = 0
+            self._backoff_until = None
+            self.fault_reason = None
+            self.last_command_at = now
+            self.last_command_reason = reason
+            self._command_history.append(
+                {
+                    "at": self._iso(now),
+                    "reason": reason,
+                    "service": service,
+                    "data": data,
+                    "result": "sent",
+                }
+            )
+            _LOGGER.info("Forwarded underlying climate service %s", service)
+            self._notify_state()
+
+    @staticmethod
+    def _validate_passthrough_value(
+        value: str, supported: list[str] | None, feature: str
+    ) -> None:
+        if supported is None or value not in supported:
+            raise ValueError(f"Unsupported {feature} mode: {value}")
+
+    @staticmethod
+    def _optional_string(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        number = finite_float(value)
+        return round(number) if number is not None else None
+
+    @staticmethod
+    def _string_list(value: Any) -> list[str] | None:
+        if not isinstance(value, (list, tuple)):
+            return None
+        values = [item for item in value if isinstance(item, str)]
+        return values or None
+
+    @staticmethod
+    def _as_hvac_mode(value: Any) -> HVACMode | None:
+        try:
+            return HVACMode(value)
+        except TypeError, ValueError:
+            return None
 
     @callback
     def _matches_expected_command(self) -> bool:
@@ -867,6 +1275,27 @@ class DaikinExternalThermostatController:
         minimum = self.options.target_temperature_min
         maximum = self.options.target_temperature_max
         step = self.options.target_temperature_step
+        bounded = min(max(value, minimum), maximum)
+        steps = round((bounded - minimum) / step)
+        return min(maximum, max(minimum, minimum + steps * step))
+
+    @callback
+    def _normalize_underlying_target(self, value: float) -> float:
+        minimum = (
+            self.underlying_minimum
+            if self.underlying_minimum is not None
+            else self.options.target_temperature_min
+        )
+        maximum = (
+            self.underlying_maximum
+            if self.underlying_maximum is not None
+            else self.options.target_temperature_max
+        )
+        step = (
+            self.underlying_step
+            if self.underlying_step is not None
+            else self.options.target_temperature_step
+        )
         bounded = min(max(value, minimum), maximum)
         steps = round((bounded - minimum) / step)
         return min(maximum, max(minimum, minimum + steps * step))

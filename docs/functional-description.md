@@ -16,6 +16,7 @@ external room-temperature sensor.
 The virtual climate entity must be the everyday user interface:
 
 - turn cooling on and off from any standard climate card;
+- select any HVAC mode and standard control advertised by the underlying entity;
 - change the requested room temperature directly on that card;
 - display the external sensor as its current temperature;
 - retain the last target temperature;
@@ -24,8 +25,9 @@ The virtual climate entity must be the everyday user interface:
 - avoid continuously polling or continually rewriting the Daikin setpoint.
 
 This is not a generic on/off thermostat and is not a Versatile Thermostat fork.
-It is a small controller for an already-integrated modulating AC. Version 1 can
-use an optional automatic boost stage when the room is far above target.
+It is a small controller for an already-integrated modulating AC. Regulated
+cooling can use an optional automatic boost stage when the room is far above
+target; all other advertised modes use direct passthrough.
 
 ## 2. Initial installation
 
@@ -37,23 +39,24 @@ The first production entry will control only Camera matrimoniale:
 | Underlying Daikin climate | `climate.camera_matrimoniale_room_temperature` |
 | New virtual climate | Entity ID chosen by Home Assistant from the entry name |
 
-The integration must support multiple independent config entries later. Each
+The integration supports multiple independent config entries. Each
 entry controls exactly one underlying climate entity with exactly one external
 temperature sensor. The config flow must reject an underlying climate entity
 already managed by another entry.
 
-## 3. Non-goals for version 1
+## 3. Non-goals
 
-- No heating, auto, dry, fan-only, or heat/cool range support.
-- No fan-speed, swing, quiet, comfort, eco, or preset forwarding.
 - No PID loop and no periodic setpoint adjustment.
 - No direct Daikin API client. All commands go through Home Assistant's existing
   underlying `climate` entity.
 - No dependence on Sleep mode, presence, schedules, or automations.
 - No helper required for the target temperature.
 - No attempt to estimate compressor power or inverter frequency.
-- No manual Boost preset or separate Boost HVAC mode. Automatic boost is an
-  internal cooling stage described in sections 6–8.
+- No synthetic Daikin-specific modes or presets. Only standard capabilities
+  advertised by the underlying Home Assistant climate entity are forwarded.
+- No separate Boost HVAC mode. Automatic boost is an internal cooling stage
+  described in sections 6–8; native Powerful/Boost remains a distinct forwarded
+  preset when the underlying entity advertises it.
 - No attachment to or merging with the Daikin integration's device-registry
   device.
 
@@ -64,23 +67,36 @@ Implement `DaikinExternalThermostatClimate(ClimateEntity)` with
 
 ### 4.1 Standard capabilities
 
-Expose:
+Always expose:
 
-- `hvac_modes`: `off`, `cool`;
+- `hvac_modes`: every valid standard mode advertised by the underlying climate;
 - `hvac_mode`: the user's requested mode, not merely the latest underlying mode;
 - `current_temperature`: latest valid value from the external sensor;
-- `target_temperature`: the user's requested room target;
+- `target_temperature`: the user's requested room target in `off`/`cool`, or the
+  cached underlying target in a passthrough mode;
 - `hvac_action`:
   - `off` when the requested mode is off;
   - `cooling` when the controller is demanding cooling and the underlying entity
     reports cooling;
   - `idle` while coasting, safety-held, waiting for a command lockout, or when
     cooling is requested but the underlying entity is not actively cooling;
+  - the cached underlying action in a passthrough HVAC mode;
 - configurable minimum, maximum, and target step;
 - supported features for target temperature, turn on, and turn off.
 
-Do not expose unsupported fan, swing, auxiliary-heat, preset, or humidity
-features copied from the underlying AC.
+Capability-based passthrough must additionally expose the underlying entity's:
+
+- fan modes and current fan mode;
+- vertical/combined and horizontal swing modes;
+- native presets, including Powerful/Boost, Quiet, Comfort, or Econo whenever
+  those exact values are advertised;
+- target-temperature range and current low/high targets;
+- current/target humidity and humidity bounds/step.
+
+Never invent a feature or option absent from the underlying entity's cached
+state. Arbitrary preset and mode strings supplied by the underlying integration
+must be retained, while HVAC modes must be valid Home Assistant `HVACMode`
+values.
 
 All entity properties must return values already held in memory. They must never
 perform I/O or service calls.
@@ -91,7 +107,10 @@ perform I/O or service calls.
 
 - `off`: immediately request an underlying off command, bypassing normal command
   spacing and budget restrictions;
-- `cool`: retain the current target, enter automatic control, and reconcile once.
+- `cool`: retain the current target, enter automatic control, and reconcile once;
+- any other advertised mode: immediately forward that mode and enter
+  `passthrough`; external-sensor transitions, safety-off, and the cooling
+  watchdog must not operate until `cool` is selected again.
 
 `climate.turn_off` is equivalent to setting HVAC mode to off.
 
@@ -99,15 +118,26 @@ perform I/O or service calls.
 
 `climate.set_temperature`:
 
-- validates and stores the new room target;
+- in `off`/`cool`, validates and stores the new room target;
 - while off, sends no underlying command;
 - while cool, schedules one immediate reconciliation;
-- multiple rapid target changes are debounced and coalesced into one command;
-- does not directly copy the room target to the underlying AC setpoint.
+- multiple rapid cooling target changes are debounced and coalesced into one
+  command;
+- in another advertised mode, forwards the normalized underlying target or
+  target-temperature range immediately without applying cooling offsets;
+- does not directly copy the room target to the underlying AC setpoint in
+  regulated cooling.
 
-The target and requested HVAC mode must be restored across Home Assistant
-restarts. A restored `cool` request does not command the AC until startup
-settling and entity validation have completed.
+Fan, swing, horizontal-swing, preset, and humidity service requests validate the
+requested value against cached underlying capabilities and are then forwarded
+immediately. These manual passthrough calls are serialized and logged, but do not
+consume the automatic cooling command budget and are never automatically
+replayed after failure.
+
+The retained cooling target and requested HVAC mode must be restored across Home
+Assistant restarts. A restored `cool` request does not command the AC until
+startup settling and entity validation have completed. A restored passthrough
+mode reflects cached underlying state and does not create a startup write.
 
 ### 4.3 Availability
 
@@ -149,6 +179,7 @@ Internal states:
 | State | Meaning |
 | --- | --- |
 | `manual_off` | User requested off; the integration will not restart the AC. |
+| `passthrough` | A non-cooling HVAC mode is active; mirror and forward controls without external-sensor regulation. |
 | `boosting` | Room is far above target; request a more aggressive AC setpoint. |
 | `cooling` | Cooling is required and an active cooling setpoint is desired. |
 | `coasting` | Near the target; request little/no cooling without cycling power. |
@@ -183,16 +214,19 @@ this section must be exposed in the options flow.
 The controller applies these rules in priority order:
 
 1. A user request for off always enters `manual_off`.
-2. An invalid/stale external sensor can enter `sensor_fault`.
-3. `R <= T - safety_off_delta` enters `safety_off` from any requested-cool
+2. Any advertised active mode other than `cool` enters `passthrough` and skips
+   the remaining cooling transition rules.
+3. An invalid/stale external sensor can enter `sensor_fault` while `cool` is
+   requested.
+4. `R <= T - safety_off_delta` enters `safety_off` from any requested-cool
    state.
-4. `safety_off` remains latched until `R >= T + safety_resume_delta`; on release,
+5. `safety_off` remains latched until `R >= T + safety_resume_delta`; on release,
    select `boosting` if its entry condition is true, otherwise `cooling`.
-5. With boost enabled, `cooling` enters `boosting` when
+6. With boost enabled, `cooling` enters `boosting` when
    `R >= T + boost_enter_delta`.
-6. `boosting` returns to `cooling` when `R <= T + boost_exit_delta`.
-7. `cooling` enters `coasting` when `R <= T + coast_enter_delta`.
-8. `coasting` enters `cooling` when `R >= T + cool_enter_delta`, or directly
+7. `boosting` returns to `cooling` when `R <= T + boost_exit_delta`.
+8. `cooling` enters `coasting` when `R <= T + coast_enter_delta`.
+9. `coasting` enters `cooling` when `R >= T + cool_enter_delta`, or directly
    enters `boosting` if the boost entry condition is already true.
 
 All automatic threshold transitions require the condition to remain true for
@@ -394,6 +428,8 @@ Rules:
   automatic-command budget.
 - Manual turn-on and target changes may bypass the interval once, but remain
   deduplicated and count toward the budget.
+- Explicit user passthrough controls are serialized and logged but bypass the
+  automatic interval and budget. They are not automatic cooling commands.
 - After the automatic budget is exhausted, suppress ordinary commands until the
   rolling count permits them again. Keep safety and manual off operational.
 - Persist timestamped logical service-call records needed for the rolling count
@@ -410,7 +446,7 @@ underlying integration's reads and for occasional manual use.
 The virtual climate is the intended control surface, but physical remotes and the
 Daikin app remain possible.
 
-Version 1 policy:
+Policy:
 
 - If the underlying AC is manually turned off while virtual mode is `cool`,
   adopt that safety-significant choice: change the virtual requested mode to
@@ -420,13 +456,19 @@ Version 1 policy:
 - If its target is externally changed while virtual mode is `cool`, record drift
   but do not immediately fight the change. Reconcile at the next controller
   transition or watchdog.
+- While the virtual mode is active, adopt an externally selected advertised HVAC
+  mode so the virtual entity remains an accurate control surface. Non-cooling
+  modes enter `passthrough`; selecting `cool` resumes external-sensor regulation
+  without an immediate target fight. Preserve virtual `off` as unmanaged intent.
+- Mirror external fan, swing, preset, range, and humidity changes from the
+  underlying state event without sending a response command.
 - Distinguish self-generated changes using a short suppression window, expected
   desired state, and command generation ID. Do not rely solely on Home
   Assistant context, which may not survive a cloud round trip.
 
 Expose an `external_control` diagnostic state when the underlying AC is running
 while the virtual climate is off. A future option may add stricter authoritative
-behavior, but it is deliberately excluded from v1.
+  behavior, but it is deliberately excluded.
 
 ## 13. Configuration and options flows
 
@@ -570,6 +612,11 @@ Cover at least:
 - restart state restoration and delayed reconciliation;
 - manual underlying off adoption;
 - external underlying target drift;
+- dynamic discovery of every advertised standard HVAC and feature capability;
+- fan, vertical/horizontal swing, preset, temperature-range, and humidity
+  passthrough, including validation failures;
+- proof that passthrough modes ignore external-sensor safety transitions and do
+  not consume the automatic command budget;
 - config-entry unload cancelling every listener and timer;
 - two entries remaining fully isolated.
 
@@ -600,6 +647,8 @@ exactly the conflict this rule prevents.
 ### 16.3 Initial acceptance criteria
 
 - Standard climate cards can turn the controller on/off and set its target.
+- Standard cards expose every underlying HVAC, fan, swing, preset, range, and
+  humidity control the selected entity advertises.
 - The displayed current temperature is the external bedroom sensor.
 - No command is emitted merely because ten minutes passed.
 - No duplicate effective mode/setpoint command is emitted.
@@ -623,8 +672,8 @@ under Home Assistant's `custom_components/`, restart Home Assistant so the new
 integration is discovered, and add it through **Settings > Devices & services**.
 Do not edit `.storage` directly.
 
-A future public version can live in its own GitHub repository and be packaged for
-HACS, but HACS packaging is not required for the first local trial.
+The public repository is packaged for HACS; manual copying remains available for
+local development and rollback.
 
 Rollback is intentionally simple:
 
@@ -646,10 +695,12 @@ an automation plus `input_number`.
 ## 19. Implementation completion checklist
 
 - Integration loads through a UI config flow and unloads cleanly.
-- A real climate entity exposes off/cool, target, current temperature, and action.
+- A real climate entity exposes all underlying standard modes and features while
+  regulating only `cool` from the external sensor.
 - All listed thresholds, offsets, timers, and budgets are editable options.
 - Optional automatic boost has configurable enter/exit thresholds and setpoint
-  offsets, but is not exposed as another HVAC mode.
+  offsets, but is not exposed as another HVAC mode and remains distinct from a
+  native Powerful/Boost preset.
 - Regulation is event-driven, with only a recovery watchdog.
 - The controller sends the minimum necessary underlying service calls.
 - Manual and safety off paths cannot be blocked by quota protection.

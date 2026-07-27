@@ -2,6 +2,19 @@
 
 All notable changes follow semantic versioning.
 
+## 1.1.0 - 2026-07-27
+
+- Mirror every standard HVAC mode advertised by the underlying climate while
+  keeping external-sensor regulation scoped to cooling.
+- Forward fan speed, vertical and horizontal swing, and native presets such as
+  Powerful/Boost, Quiet, and Econo when the underlying entity supports them.
+- Forward passthrough target temperatures, heat/cool ranges, and humidity
+  controls with underlying bounds and step normalization.
+- Reflect remote/app changes to passthrough controls immediately from cached
+  Home Assistant state without polling or direct Daikin API access.
+- Keep native Powerful/Boost presets distinct from the automatic internal
+  boosting stage and exclude manual passthrough calls from the automatic budget.
+
 ## 1.0.0 - 2026-07-27
 
 - Add an event-driven `off` / `cool` climate entity using an external room
